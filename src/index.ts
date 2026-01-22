@@ -52,6 +52,12 @@ function createMCPServer(): McpServer {
  * Authentication middleware for MCP endpoints
  */
 function authMiddleware(req: Request, res: Response, next: NextFunction): void {
+  // Allow unauthenticated initialize requests (MCP handshake / health probe)
+  if (req.body?.method === "initialize") {
+    next();
+    return;
+  }
+
   const authHeader = req.headers.authorization;
 
   if (!authHeader?.startsWith("Bearer ")) {
