@@ -29,7 +29,7 @@ QUICKBOOKS_CLIENT_SECRET=your_client_secret
 QUICKBOOKS_ENVIRONMENT=sandbox
 
 # Server URL (port is extracted from this)
-OAUTH_ISSUER=http://localhost:3000
+OAUTH_ISSUER=http://localhost:8000
 
 # Transport: http or stdio (default: http)
 TRANSPORT=http
@@ -38,7 +38,7 @@ TRANSPORT=http
 ### QuickBooks Developer Setup
 
 1. Create an app at [developer.intuit.com](https://developer.intuit.com)
-2. Add redirect URI: `http://localhost:3000/callback`
+2. Add redirect URI: `http://localhost:8000/callback`
 3. Copy your Client ID and Client Secret to `.env`
 
 ## Usage
@@ -50,9 +50,9 @@ npm start
 ```
 
 The server will be available at:
-- OAuth metadata: `http://localhost:3000/.well-known/oauth-authorization-server`
-- Protected resource metadata: `http://localhost:3000/.well-known/oauth-protected-resource`
-- MCP endpoint: `http://localhost:3000/mcp` (requires Bearer token)
+- OAuth metadata: `http://localhost:8000/.well-known/oauth-authorization-server`
+- Protected resource metadata: `http://localhost:8000/.well-known/oauth-protected-resource`
+- MCP endpoint: `http://localhost:8000/mcp` (requires Bearer token)
 
 ### stdio Transport (local development)
 
