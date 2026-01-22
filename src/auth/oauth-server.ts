@@ -36,8 +36,9 @@ const pendingAuthorizations = new Map<string, {
 }>();
 
 // Configuration
+const port = process.env.PORT || "3000";
 const config = {
-  issuer: process.env.OAUTH_ISSUER || "http://localhost:3000",
+  issuer: process.env.OAUTH_ISSUER || `http://localhost:${port}`,
   quickbooksClientId: process.env.QUICKBOOKS_CLIENT_ID || "",
   quickbooksClientSecret: process.env.QUICKBOOKS_CLIENT_SECRET || "",
   quickbooksEnvironment: process.env.QUICKBOOKS_ENVIRONMENT || "sandbox",

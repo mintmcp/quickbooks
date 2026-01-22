@@ -28,8 +28,7 @@ QUICKBOOKS_CLIENT_SECRET=your_client_secret
 # Environment: sandbox or production (default: sandbox)
 QUICKBOOKS_ENVIRONMENT=sandbox
 
-# OAuth Server Settings
-OAUTH_ISSUER=http://localhost:3000
+# Server Settings
 PORT=3000
 
 # Transport: http or stdio (default: http)
