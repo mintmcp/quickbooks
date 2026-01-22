@@ -145,11 +145,12 @@ async function runHTTPServer(): Promise<void> {
     res.json({ status: "ok", server: "quickbooks-mcp-server" });
   });
 
-  const port = parseInt(process.env.PORT || "3000");
+  const issuer = process.env.OAUTH_ISSUER || "http://localhost:3000";
+  const port = new URL(issuer).port || (issuer.startsWith("https") ? 443 : 80);
   app.listen(port, () => {
-    console.error(`QuickBooks MCP Server running on http://localhost:${port}`);
-    console.error(`OAuth metadata: http://localhost:${port}/.well-known/oauth-authorization-server`);
-    console.error(`MCP endpoint: http://localhost:${port}/mcp`);
+    console.error(`QuickBooks MCP Server running at ${issuer}`);
+    console.error(`OAuth metadata: ${issuer}/.well-known/oauth-authorization-server`);
+    console.error(`MCP endpoint: ${issuer}/mcp`);
   });
 }
 
