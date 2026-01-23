@@ -61,6 +61,8 @@ function authMiddleware(req: Request, res: Response, next: NextFunction): void {
   const authHeader = req.headers.authorization;
 
   if (!authHeader?.startsWith("Bearer ")) {
+    const issuer = process.env.OAUTH_ISSUER || "http://localhost:8000";
+    res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${issuer}/.well-known/oauth-protected-resource"`);
     res.status(401).json({
       error: "unauthorized",
       error_description: "Bearer token required",
