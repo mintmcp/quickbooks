@@ -154,9 +154,10 @@ async function runHTTPServer(): Promise<void> {
   });
 
   const issuer = process.env.OAUTH_ISSUER || "http://localhost:8000";
-  const port = new URL(issuer).port || (issuer.startsWith("https") ? 443 : 80);
+  const port = 8000;
   app.listen(port, () => {
-    console.error(`QuickBooks MCP Server running at ${issuer}`);
+    console.error(`QuickBooks MCP Server listening on port ${port}`);
+    console.error(`OAuth issuer: ${issuer}`);
     console.error(`OAuth metadata: ${issuer}/.well-known/oauth-authorization-server`);
     console.error(`MCP endpoint: ${issuer}/mcp`);
   });
