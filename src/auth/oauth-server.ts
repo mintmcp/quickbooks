@@ -6,6 +6,9 @@
  * - OAuth 2.0 Dynamic Client Registration Protocol (RFC 7591)
  * - OAuth 2.1 Authorization Code Flow with PKCE
  * - Token refresh
+ *
+ * Tokens are STATELESS - they contain encrypted QuickBooks credentials.
+ * This allows the server to restart without losing token validity.
  */
 
 import { Router, Request, Response } from "express";
@@ -19,9 +22,73 @@ import {
 } from "../types/index.js";
 import { TOKEN_EXPIRY_SECONDS, AUTH_CODE_EXPIRY_SECONDS } from "../constants.js";
 
-// In-memory stores (in production, use a database)
+// Encryption key for stateless tokens - should be set via environment variable
+// If not set, generates a random key (tokens won't survive server restart without this)
+const TOKEN_ENCRYPTION_KEY = process.env.TOKEN_ENCRYPTION_KEY
+  ? Buffer.from(process.env.TOKEN_ENCRYPTION_KEY, 'base64')
+  : crypto.randomBytes(32);
+
+if (!process.env.TOKEN_ENCRYPTION_KEY) {
+  console.warn('[OAuth] TOKEN_ENCRYPTION_KEY not set - generating random key. Tokens will not survive server restart.');
+}
+
+/**
+ * Stateless token payload - encrypted into access/refresh tokens
+ */
+interface StatelessTokenPayload {
+  type: 'access' | 'refresh';
+  client_id: string;
+  realm_id: string;
+  qb_access_token: string;
+  qb_refresh_token: string;
+  expires_at: number;
+  issued_at: number;
+}
+
+/**
+ * Encrypt a token payload into a stateless token string
+ */
+function encryptTokenPayload(payload: StatelessTokenPayload): string {
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv('aes-256-gcm', TOKEN_ENCRYPTION_KEY, iv);
+
+  const plaintext = JSON.stringify(payload);
+  const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+
+  // Format: base64(iv + authTag + encrypted)
+  const combined = Buffer.concat([iv, authTag, encrypted]);
+  return combined.toString('base64url');
+}
+
+/**
+ * Decrypt a stateless token string into a token payload
+ */
+function decryptTokenPayload(token: string): StatelessTokenPayload | null {
+  try {
+    const combined = Buffer.from(token, 'base64url');
+
+    if (combined.length < 32) return null; // iv(16) + authTag(16) minimum
+
+    const iv = combined.subarray(0, 16);
+    const authTag = combined.subarray(16, 32);
+    const encrypted = combined.subarray(32);
+
+    const decipher = crypto.createDecipheriv('aes-256-gcm', TOKEN_ENCRYPTION_KEY, iv);
+    decipher.setAuthTag(authTag);
+
+    const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
+    return JSON.parse(decrypted.toString('utf8'));
+  } catch (err) {
+    console.error('[OAuth] Failed to decrypt token:', err);
+    return null;
+  }
+}
+
+// In-memory stores - only needed for authorization flow, not token validation
 const registeredClients = new Map<string, OAuthClientRegistration>();
 const authorizationCodes = new Map<string, AuthorizationCode>();
+// These are now optional - kept for backward compatibility but not required for validation
 const accessTokens = new Map<string, TokenData>();
 const refreshTokens = new Map<string, TokenData>();
 
@@ -376,30 +443,30 @@ export function createOAuthRouter(): Router {
       clientSecret = clientSecret || secret;
     }
 
-    // Validate client
-    console.error(`[/token] client_id from body: ${bodyClientId}`);
-    console.error(`[/token] client_id from auth header: ${authHeader?.startsWith("Basic ") ? "present" : "none"}`);
-    console.error(`[/token] resolved client_id: ${clientId}`);
-    console.error(`[/token] registered clients: ${Array.from(registeredClients.keys()).join(", ")}`);
+    console.error(`[/token] grant_type: ${grant_type}, client_id: ${clientId}`);
 
-    const client = registeredClients.get(clientId);
-    if (!client) {
-      console.error(`[/token] client not found!`);
-      res.status(401).json({
-        error: "invalid_client",
-        error_description: "Unknown client",
-      });
-      return;
-    }
-
-    // Verify client secret if required
-    if (client.token_endpoint_auth_method !== "none") {
-      if (client.client_secret !== clientSecret) {
+    // For authorization_code grant, validate client against registered clients
+    // For refresh_token grant, the token itself validates the client (stateless)
+    if (grant_type === "authorization_code") {
+      const client = registeredClients.get(clientId);
+      if (!client) {
+        console.error(`[/token] client not found for authorization_code grant`);
         res.status(401).json({
           error: "invalid_client",
-          error_description: "Invalid client credentials",
+          error_description: "Unknown client",
         });
         return;
+      }
+
+      // Verify client secret if required
+      if (client.token_endpoint_auth_method !== "none") {
+        if (client.client_secret !== clientSecret) {
+          res.status(401).json({
+            error: "invalid_client",
+            error_description: "Invalid client credentials",
+          });
+          return;
+        }
       }
     }
 
@@ -472,22 +539,32 @@ export function createOAuthRouter(): Router {
       // Delete the authorization code (single use)
       authorizationCodes.delete(code);
 
-      // Generate tokens
-      const accessToken = generateSecureToken(32);
-      const newRefreshToken = generateSecureToken(32);
-
-      const tokenData: TokenData = {
+      // Generate stateless encrypted tokens
+      const now = Date.now();
+      const accessTokenPayload: StatelessTokenPayload = {
+        type: 'access',
         client_id: clientId,
-        access_token: accessToken,
-        refresh_token: newRefreshToken,
-        expires_at: Date.now() + TOKEN_EXPIRY_SECONDS * 1000,
-        realm_id: authCode.realm_id,
-        qb_access_token: authCode.qb_access_token,
-        qb_refresh_token: authCode.qb_refresh_token,
+        realm_id: authCode.realm_id!,
+        qb_access_token: authCode.qb_access_token!,
+        qb_refresh_token: authCode.qb_refresh_token!,
+        expires_at: now + TOKEN_EXPIRY_SECONDS * 1000,
+        issued_at: now,
       };
 
-      accessTokens.set(accessToken, tokenData);
-      refreshTokens.set(newRefreshToken, tokenData);
+      const refreshTokenPayload: StatelessTokenPayload = {
+        type: 'refresh',
+        client_id: clientId,
+        realm_id: authCode.realm_id!,
+        qb_access_token: authCode.qb_access_token!,
+        qb_refresh_token: authCode.qb_refresh_token!,
+        expires_at: now + 90 * 24 * 60 * 60 * 1000, // 90 days for refresh token
+        issued_at: now,
+      };
+
+      const accessToken = encryptTokenPayload(accessTokenPayload);
+      const newRefreshToken = encryptTokenPayload(refreshTokenPayload);
+
+      console.error(`[/token] Issued stateless tokens for client ${clientId}, realm ${authCode.realm_id}`);
 
       res.json({
         access_token: accessToken,
@@ -500,7 +577,7 @@ export function createOAuthRouter(): Router {
     }
 
     if (grant_type === "refresh_token") {
-      // Refresh Token Grant
+      // Refresh Token Grant - stateless token handling
       if (!refresh_token) {
         res.status(400).json({
           error: "invalid_request",
@@ -509,8 +586,9 @@ export function createOAuthRouter(): Router {
         return;
       }
 
-      const existingTokenData = refreshTokens.get(refresh_token);
-      if (!existingTokenData) {
+      // Decrypt the stateless refresh token
+      const tokenPayload = decryptTokenPayload(refresh_token);
+      if (!tokenPayload) {
         res.status(400).json({
           error: "invalid_grant",
           error_description: "Invalid refresh token",
@@ -518,7 +596,25 @@ export function createOAuthRouter(): Router {
         return;
       }
 
-      if (existingTokenData.client_id !== clientId) {
+      if (tokenPayload.type !== 'refresh') {
+        res.status(400).json({
+          error: "invalid_grant",
+          error_description: "Token is not a refresh token",
+        });
+        return;
+      }
+
+      // Check if refresh token is expired
+      if (Date.now() > tokenPayload.expires_at) {
+        res.status(400).json({
+          error: "invalid_grant",
+          error_description: "Refresh token has expired",
+        });
+        return;
+      }
+
+      // Verify client_id matches (if provided)
+      if (clientId && tokenPayload.client_id !== clientId) {
         res.status(400).json({
           error: "invalid_grant",
           error_description: "Refresh token was not issued to this client",
@@ -526,9 +622,12 @@ export function createOAuthRouter(): Router {
         return;
       }
 
-      // Refresh QuickBooks tokens if needed
-      let qbAccessToken = existingTokenData.qb_access_token;
-      let qbRefreshToken = existingTokenData.qb_refresh_token;
+      // Use the client_id from the token if not provided in request
+      const effectiveClientId = clientId || tokenPayload.client_id;
+
+      // Refresh QuickBooks tokens
+      let qbAccessToken = tokenPayload.qb_access_token;
+      let qbRefreshToken = tokenPayload.qb_refresh_token;
 
       if (qbRefreshToken) {
         try {
@@ -536,32 +635,39 @@ export function createOAuthRouter(): Router {
           const refreshResponse = await qbClient.refreshUsingToken(qbRefreshToken);
           qbAccessToken = refreshResponse.token.access_token;
           qbRefreshToken = refreshResponse.token.refresh_token;
+          console.error(`[/token] Successfully refreshed QuickBooks tokens for realm ${tokenPayload.realm_id}`);
         } catch (err) {
-          console.error("Failed to refresh QuickBooks token:", err);
+          console.error("[/token] Failed to refresh QuickBooks token:", err);
           // Continue with existing tokens - they may still work
         }
       }
 
-      // Delete old tokens
-      accessTokens.delete(existingTokenData.access_token);
-      refreshTokens.delete(refresh_token);
-
-      // Generate new tokens
-      const newAccessToken = generateSecureToken(32);
-      const newRefreshToken = generateSecureToken(32);
-
-      const newTokenData: TokenData = {
-        client_id: clientId,
-        access_token: newAccessToken,
-        refresh_token: newRefreshToken,
-        expires_at: Date.now() + TOKEN_EXPIRY_SECONDS * 1000,
-        realm_id: existingTokenData.realm_id,
+      // Generate new stateless tokens with updated QB credentials
+      const now = Date.now();
+      const newAccessTokenPayload: StatelessTokenPayload = {
+        type: 'access',
+        client_id: effectiveClientId,
+        realm_id: tokenPayload.realm_id,
         qb_access_token: qbAccessToken,
         qb_refresh_token: qbRefreshToken,
+        expires_at: now + TOKEN_EXPIRY_SECONDS * 1000,
+        issued_at: now,
       };
 
-      accessTokens.set(newAccessToken, newTokenData);
-      refreshTokens.set(newRefreshToken, newTokenData);
+      const newRefreshTokenPayload: StatelessTokenPayload = {
+        type: 'refresh',
+        client_id: effectiveClientId,
+        realm_id: tokenPayload.realm_id,
+        qb_access_token: qbAccessToken,
+        qb_refresh_token: qbRefreshToken,
+        expires_at: now + 90 * 24 * 60 * 60 * 1000, // 90 days
+        issued_at: now,
+      };
+
+      const newAccessToken = encryptTokenPayload(newAccessTokenPayload);
+      const newRefreshToken = encryptTokenPayload(newRefreshTokenPayload);
+
+      console.error(`[/token] Issued refreshed stateless tokens for client ${effectiveClientId}, realm ${tokenPayload.realm_id}`);
 
       res.json({
         access_token: newAccessToken,
@@ -584,8 +690,35 @@ export function createOAuthRouter(): Router {
 
 /**
  * Validate an access token and return the associated token data
+ * Now uses stateless encrypted tokens - no server-side storage needed
  */
 export function validateAccessToken(token: string): TokenData | null {
+  // Try to decrypt as stateless token
+  const payload = decryptTokenPayload(token);
+  if (payload) {
+    if (payload.type !== 'access') {
+      console.error('[validateAccessToken] Token is not an access token');
+      return null;
+    }
+
+    if (Date.now() > payload.expires_at) {
+      console.error('[validateAccessToken] Token has expired');
+      return null;
+    }
+
+    // Convert stateless payload to TokenData format for compatibility
+    return {
+      client_id: payload.client_id,
+      access_token: token,
+      refresh_token: undefined,
+      expires_at: payload.expires_at,
+      realm_id: payload.realm_id,
+      qb_access_token: payload.qb_access_token,
+      qb_refresh_token: payload.qb_refresh_token,
+    };
+  }
+
+  // Fallback to in-memory lookup for backward compatibility with old tokens
   const tokenData = accessTokens.get(token);
   if (!tokenData) return null;
 
