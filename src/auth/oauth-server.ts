@@ -161,7 +161,7 @@ export function createOAuthRouter(): Router {
    *
    * This tells MCP clients where to find the authorization server.
    */
-  router.get("/.well-known/oauth-protected-resource", (_req: Request, res: Response) => {
+  router.get("/.well-known/oauth-protected-resource/mcp", (_req: Request, res: Response) => {
     const metadata = {
       resource: `${config.issuer}/mcp`,
       authorization_servers: [config.issuer],
