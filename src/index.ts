@@ -17,7 +17,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import QuickBooks from "node-quickbooks";
-import { createOAuthRouter, getQuickBooksCredentials, validateAccessToken } from "./auth/oauth-server.js";
+import { createOAuthRouter } from "./auth/oauth-server.js";
 import { createQuickBooksInstance } from "./services/quickbooks-client.js";
 import { registerAllTools } from "./tools/register-tools.js";
 
@@ -49,10 +49,13 @@ function createMCPServer(): McpServer {
 }
 
 /**
- * Authentication middleware for MCP endpoints
+ * Authentication middleware for MCP endpoints.
+ *
+ * Accepts a raw QuickBooks access token as a Bearer token. The realmId is
+ * read from the QUICKBOOKS_REALM_ID environment variable (configured per
+ * deployment, since each instance serves a single QB company).
  */
 function authMiddleware(req: Request, res: Response, next: NextFunction): void {
-  // Allow unauthenticated initialize requests (MCP handshake / health probe)
   if (req.body?.method === "initialize") {
     next();
     return;
@@ -62,7 +65,10 @@ function authMiddleware(req: Request, res: Response, next: NextFunction): void {
 
   if (!authHeader?.startsWith("Bearer ")) {
     const issuer = process.env.OAUTH_ISSUER || "http://localhost:8000";
-    res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${issuer}/.well-known/oauth-protected-resource"`);
+    res.setHeader(
+      "WWW-Authenticate",
+      `Bearer resource_metadata="${issuer}/.well-known/oauth-protected-resource/mcp"`,
+    );
     res.status(401).json({
       error: "unauthorized",
       error_description: "Bearer token required",
@@ -70,32 +76,17 @@ function authMiddleware(req: Request, res: Response, next: NextFunction): void {
     return;
   }
 
-  const token = authHeader.slice(7);
-  const tokenData = validateAccessToken(token);
-
-  if (!tokenData) {
-    res.status(401).json({
-      error: "invalid_token",
-      error_description: "Invalid or expired access token",
+  const realmId = process.env.QUICKBOOKS_REALM_ID;
+  if (!realmId) {
+    res.status(500).json({
+      error: "server_error",
+      error_description: "QUICKBOOKS_REALM_ID is not configured",
     });
     return;
   }
 
-  const qbCreds = getQuickBooksCredentials(token);
-  if (!qbCreds) {
-    res.status(401).json({
-      error: "invalid_token",
-      error_description: "Token does not have QuickBooks credentials",
-    });
-    return;
-  }
-
-  // Create QuickBooks instance for this request
-  req.qb = createQuickBooksInstance(
-    qbCreds.accessToken,
-    qbCreds.realmId,
-    qbCreds.refreshToken
-  );
+  const accessToken = authHeader.slice(7);
+  req.qb = createQuickBooksInstance(accessToken, realmId, undefined);
 
   next();
 }
@@ -195,11 +186,10 @@ async function runStdioServer(): Promise<void> {
 async function main(): Promise<void> {
   const transport = process.env.TRANSPORT || "http";
 
-  // Validate required QuickBooks app credentials
   if (!process.env.QUICKBOOKS_CLIENT_ID || !process.env.QUICKBOOKS_CLIENT_SECRET) {
-    console.error("ERROR: QUICKBOOKS_CLIENT_ID and QUICKBOOKS_CLIENT_SECRET are required");
-    console.error("       Set these in your environment or .env file");
-    process.exit(1);
+    console.warn("WARNING: QUICKBOOKS_CLIENT_ID and QUICKBOOKS_CLIENT_SECRET not set.");
+    console.warn("         The server's built-in OAuth flow (DCR, /authorize, /token) will not work.");
+    console.warn("         Direct Bearer token authentication will still work.");
   }
 
   if (transport === "stdio") {
