@@ -35,6 +35,24 @@ export function createQuickBooksInstance(
   );
 }
 
+export function isAuthenticationError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const err = error as Record<string, unknown>;
+  if (err.statusCode === 401) return true;
+  if (typeof err.Fault === "object" && err.Fault !== null) {
+    const fault = err.Fault as Record<string, unknown>;
+    if (fault.type === "AUTHENTICATION") return true;
+  }
+  return false;
+}
+
+// Module-level flag: set when a QB API call fails with an auth error.
+// The Express handler checks this to convert the HTTP response to 401.
+let _authErrorOccurred = false;
+
+export function getAuthErrorOccurred(): boolean { return _authErrorOccurred; }
+export function resetAuthErrorFlag(): void { _authErrorOccurred = false; }
+
 /**
  * Format an error into a readable string
  */
@@ -68,6 +86,9 @@ function promisify<T>(
   return new Promise((resolve, reject) => {
     const callback = (err: unknown, result: T) => {
       if (err) {
+        if (isAuthenticationError(err)) {
+          _authErrorOccurred = true;
+        }
         reject(err);
       } else {
         resolve(result);

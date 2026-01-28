@@ -18,7 +18,7 @@ import express, { Request, Response, NextFunction } from "express";
 import cors from "cors";
 import QuickBooks from "node-quickbooks";
 import { createOAuthRouter } from "./auth/oauth-server.js";
-import { createQuickBooksInstance } from "./services/quickbooks-client.js";
+import { createQuickBooksInstance, getAuthErrorOccurred, resetAuthErrorFlag } from "./services/quickbooks-client.js";
 import { registerAllTools } from "./tools/register-tools.js";
 
 // Extend Express Request to include QuickBooks instance
@@ -111,6 +111,24 @@ async function runHTTPServer(): Promise<void> {
   app.post("/mcp", authMiddleware, async (req: Request, res: Response) => {
     // Set the current QB instance for this request
     currentQBInstance = req.qb || null;
+    resetAuthErrorFlag();
+
+    // Intercept writeHead so that if a QB API call fails with an
+    // authentication error (expired/invalid token), we surface it as
+    // HTTP 401 instead of the SDK's default HTTP 200 JSON-RPC error.
+    // This lets the MCP client's OAuth refresh flow trigger automatically.
+    const originalWriteHead = res.writeHead.bind(res);
+    (res as any).writeHead = function (statusCode: number, ...args: any[]) {
+      if (getAuthErrorOccurred()) {
+        const issuer = process.env.OAUTH_ISSUER || "http://localhost:8000";
+        res.setHeader(
+          "WWW-Authenticate",
+          `Bearer resource_metadata="${issuer}/.well-known/oauth-protected-resource/mcp", error="invalid_token"`,
+        );
+        return originalWriteHead(401, ...args);
+      }
+      return originalWriteHead(statusCode, ...args);
+    };
 
     try {
       // Create new transport for each request (stateless)
