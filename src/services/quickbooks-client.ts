@@ -39,8 +39,8 @@ export function isAuthenticationError(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
   const err = error as Record<string, unknown>;
   if (err.statusCode === 401) return true;
-  if (typeof err.Fault === "object" && err.Fault !== null) {
-    const fault = err.Fault as Record<string, unknown>;
+  const fault = (err.fault ?? err.Fault) as Record<string, unknown> | undefined;
+  if (typeof fault === "object" && fault !== null) {
     if (fault.type === "AUTHENTICATION") return true;
   }
   return false;
@@ -61,13 +61,15 @@ export function formatError(error: unknown): string {
     return error.message;
   }
   if (typeof error === "object" && error !== null) {
-    // QuickBooks API errors often have a Fault property
     const qbError = error as Record<string, unknown>;
-    if (qbError.Fault && typeof qbError.Fault === "object") {
-      const fault = qbError.Fault as Record<string, unknown>;
-      if (Array.isArray(fault.Error) && fault.Error.length > 0) {
-        const firstError = fault.Error[0] as Record<string, unknown>;
-        return `${firstError.Message || "Unknown error"}: ${firstError.Detail || ""}`;
+    const fault = (qbError.fault ?? qbError.Fault) as Record<string, unknown> | undefined;
+    if (fault && typeof fault === "object") {
+      const errors = (fault.error ?? fault.Error) as Record<string, unknown>[] | undefined;
+      if (Array.isArray(errors) && errors.length > 0) {
+        const first = errors[0];
+        const msg = first.message ?? first.Message ?? "Unknown error";
+        const detail = first.detail ?? first.Detail ?? "";
+        return `${msg}: ${detail}`;
       }
     }
     return JSON.stringify(error);
